@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bus Driver - Location Sender</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: Arial, sans-serif;
+    background: #f4f6f8;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    margin: 0;
+    padding: 20px;
+  }
+  .card {
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    padding: 30px;
+    max-width: 420px;
+    width: 100%;
+    text-align: center;
+  }
+  h1 { font-size: 22px; color: #1a1a1a; margin-bottom: 5px; }
+  p.subtitle { color: #666; font-size: 14px; margin-bottom: 20px; }
+  label {
+    display: block;
+    text-align: left;
+    font-size: 13px;
+    color: #475569;
+    margin-bottom: 4px;
+    font-weight: bold;
+  }
+  select, input {
+    width: 100%;
+    padding: 12px;
+    margin-bottom: 14px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 15px;
+  }
+  .add-bus-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .add-bus-row input { margin-bottom: 0; flex: 1; }
+  .add-bus-row button {
+    width: auto;
+    padding: 0 16px;
+    background: #3b82f6;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-weight: bold;
+    cursor: pointer;
+  }
+  .add-bus-row button:hover { background: #2563eb; }
+  button.main-btn {
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: 0.2s;
+  }
+  #startBtn { background: #22c55e; color: white; }
+  #startBtn:hover { background: #16a34a; }
+  #stopBtn { background: #ef4444; color: white; margin-top: 10px; display: none; }
+  #stopBtn:hover { background: #dc2626; }
+  #status {
+    margin-top: 20px;
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    background: #f1f5f9;
+    color: #334155;
+    word-break: break-word;
+  }
+  #kmStat {
+    margin-top: 10px;
+    font-size: 13px;
+    color: #64748b;
+  }
+  .dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 6px;
+  }
+  .live { background: #22c55e; animation: pulse 1.5s infinite; }
+  .off { background: #94a3b8; }
+  .err { background: #ef4444; }
+  @keyframes pulse {
+    0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; }
+  }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>🚌 Bus Location Sharing</h1>
+  <p class="subtitle">Driver panel — bus select karo aur sharing start karo</p>
+
+  <label>Bus Select karo</label>
+  <select id="busSelect"></select>
+
+  <label>Naya Bus Add karo</label>
+  <div class="add-bus-row">
+    <input type="text" id="newBusName" placeholder="e.g. Bus 4">
+    <button onclick="addNewBus()">+ Add</button>
+  </div>
+
+  <button id="startBtn" class="main-btn" onclick="startSharing()">Start Sharing Location</button>
+  <button id="stopBtn" class="main-btn" onclick="stopSharing()">Stop Sharing</button>
+
+  <div id="status"><span class="dot off"></span>Sharing band hai</div>
+  <div id="kmStat">Aaj ka distance: 0.00 km</div>
+</div>
+
+<!-- Firebase compat build served from jsdelivr -->
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-app-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-database-compat.js"></script>
+
+<script>
+  var firebaseConfig = {
+    apiKey: "AIzaSyAVa0W9QRk2p_YugfM4GBoodxEpax2AqaA",
+    authDomain: "school-bus-tracker-63ce2.firebaseapp.com",
+    databaseURL: "https://school-bus-tracker-63ce2-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "school-bus-tracker-63ce2",
+    storageBucket: "school-bus-tracker-63ce2.firebasestorage.app",
+    messagingSenderId: "1036649845223",
+    appId: "1:1036649845223:web:1349c2566f717ecc04ad42"
+  };
+
+  var db = null;
+  var watchId = null;
+  var lastPos = null; // { lat, lng } — last recorded point (for distance calc)
+  var todayKm = 0;
+  var todayStr = getTodayStr();
+
+  try {
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.database();
+  } catch (e) {
+    setStatus("Firebase load error: " + e.message, "err");
+  }
+
+  function getTodayStr() {
+    var d = new Date();
+    var y = d.getFullYear();
+    var m = String(d.getMonth() + 1).padStart(2, '0');
+    var day = String(d.getDate()).padStart(2, '0');
+    return y + "-" + m + "-" + day;
+  }
+
+  function sanitizeBusId(name) {
+    return name.trim().replace(/[.#$\[\]\/\s]+/g, '_');
+  }
+
+  function setStatus(html, dotClass) {
+    document.getElementById('status').innerHTML =
+      '<span class="dot ' + dotClass + '"></span>' + html;
+  }
+
+  // ---- Bus list: populate dropdown, keep synced with Firebase ----
+  function loadBusList() {
+    if (!db) return;
+    db.ref('busList').on('value', function (snapshot) {
+      var data = snapshot.val() || {};
+      var select = document.getElementById('busSelect');
+      var prevValue = select.value;
+      select.innerHTML = '';
+
+      var keys = Object.keys(data);
+      if (keys.length === 0) {
+        // seed a default bus if list is empty
+        db.ref('busList/BUS01').set('Bus 1').catch(function (err) {
+          setStatus("Bus list seed error: " + err.message, "err");
+        });
+        return;
+      }
+
+      keys.sort().forEach(function (key) {
+        var opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = data[key];
+        select.appendChild(opt);
+      });
+
+      if (prevValue && data[prevValue]) {
+        select.value = prevValue;
+      }
+    }, function (error) {
+      setStatus("Bus list load error (check Firebase Rules): " + error.message, "err");
+    });
+  }
+
+  window.addNewBus = function () {
+    if (!db) return;
+    var name = document.getElementById('newBusName').value.trim();
+    if (!name) {
+      alert("Bus ka naam daalo!");
+      return;
+    }
+    var id = sanitizeBusId(name);
+    db.ref('busList/' + id).set(name).then(function () {
+      document.getElementById('newBusName').value = '';
+      document.getElementById('busSelect').value = id;
+    }).catch(function (err) {
+      alert("Error: " + err.message);
+    });
+  };
+
+  // ---- Haversine distance in km ----
+  function haversineKm(lat1, lon1, lat2, lon2) {
+    var R = 6371;
+    var dLat = (lat2 - lat1) * Math.PI / 180;
+    var dLon = (lon2 - lon1) * Math.PI / 180;
+    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  window.startSharing = function () {
+    if (!db) {
+      setStatus("Firebase load nahi hua — page refresh karo.", "err");
+      return;
+    }
+    var busId = document.getElementById('busSelect').value;
+    if (!busId) {
+      alert("Pehle ek bus select ya add karo!");
+      return;
+    }
+    if (!navigator.geolocation) {
+      setStatus("Ye browser location support nahi karta.", "err");
+      return;
+    }
+    if (location.protocol !== "https:" && location.hostname !== "localhost") {
+      setStatus("Location sirf HTTPS site pe kaam karega. Is file ko GitHub Pages ya kisi HTTPS host pe daalo.", "err");
+      return;
+    }
+
+    lastPos = null;
+    todayStr = getTodayStr();
+    todayKm = 0;
+
+    // Load existing today's km (agar page reload hua ho)
+    db.ref('history/' + busId + '/' + todayStr + '/totalKm').once('value').then(function (snap) {
+      todayKm = snap.val() || 0;
+      document.getElementById('kmStat').innerText = "Aaj ka distance: " + todayKm.toFixed(2) + " km";
+    });
+
+    watchId = navigator.geolocation.watchPosition(
+      function (position) {
+        var lat = position.coords.latitude;
+        var lng = position.coords.longitude;
+        var speed = position.coords.speed || 0;
+        var timestamp = new Date().toISOString();
+
+        // 1) Update live location
+        db.ref('buses/' + busId).set({
+          lat: lat,
+          lng: lng,
+          speed: speed,
+          lastUpdated: timestamp
+        }).then(function () {
+          setStatus("Live: " + lat.toFixed(5) + ", " + lng.toFixed(5), "live");
+        }).catch(function (err) {
+          setStatus("Firebase error: " + err.message, "err");
+        });
+
+        // 2) Record history point + accumulate distance (only if moved > 25m, to avoid GPS jitter)
+        var dateNow = getTodayStr();
+        if (dateNow !== todayStr) {
+          // date changed (past midnight) — reset counters for new day
+          todayStr = dateNow;
+          todayKm = 0;
+          lastPos = null;
+        }
+
+        var shouldRecord = true;
+        var deltaKm = 0;
+        if (lastPos) {
+          deltaKm = haversineKm(lastPos.lat, lastPos.lng, lat, lng);
+          if (deltaKm * 1000 < 25) {
+            shouldRecord = false; // too small a move, skip (GPS noise)
+          }
+        }
+
+        if (shouldRecord) {
+          db.ref('history/' + busId + '/' + todayStr + '/points').push({
+            lat: lat,
+            lng: lng,
+            timestamp: timestamp
+          });
+
+          if (lastPos) {
+            todayKm += deltaKm;
+            db.ref('history/' + busId + '/' + todayStr + '/totalKm').set(todayKm);
+            document.getElementById('kmStat').innerText = "Aaj ka distance: " + todayKm.toFixed(2) + " km";
+          }
+          lastPos = { lat: lat, lng: lng };
+        }
+      },
+      function (error) {
+        setStatus("GPS error: " + error.message, "err");
+      },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+    );
+
+    document.getElementById('startBtn').style.display = 'none';
+    document.getElementById('stopBtn').style.display = 'block';
+  };
+
+  window.stopSharing = function () {
+    if (watchId !== null) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+    }
+    setStatus("Sharing band hai", "off");
+    document.getElementById('startBtn').style.display = 'block';
+    document.getElementById('stopBtn').style.display = 'none';
+  };
+
+  loadBusList();
+</script>
+
+</body>
+</html>

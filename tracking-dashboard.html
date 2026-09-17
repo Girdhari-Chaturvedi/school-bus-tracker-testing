@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>School Bus Live Tracker</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
+
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    background: #f4f6f8;
+  }
+  header {
+    background: #1e3a8a;
+    color: white;
+    padding: 16px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  select, input[type="date"] {
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid #cbd5e1;
+    font-size: 14px;
+  }
+  #map { height: calc(100vh - 190px); width: 100%; }
+  .info-bar {
+    background: white;
+    padding: 12px 20px;
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    align-items: center;
+    font-size: 14px;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .info-item { display: flex; flex-direction: column; }
+  .info-item span.label { color: #64748b; font-size: 12px; }
+  .info-item span.value { font-weight: bold; color: #1e293b; }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    background: white;
+    padding: 10px 20px 0 20px;
+  }
+  .tab-btn {
+    padding: 8px 16px;
+    border: none;
+    background: #e2e8f0;
+    border-radius: 8px 8px 0 0;
+    cursor: pointer;
+    font-size: 14px;
+    color: #475569;
+  }
+  .tab-btn.active { background: #1e3a8a; color: white; }
+  .history-bar {
+    background: white;
+    padding: 12px 20px;
+    display: none;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .history-bar.show { display: flex; }
+  .history-bar button {
+    padding: 8px 16px;
+    background: #3b82f6;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .history-bar button:hover { background: #2563eb; }
+  .history-bar .clear-btn { background: #94a3b8; }
+  .history-bar .clear-btn:hover { background: #64748b; }
+  .bus-emoji-icon { font-size: 26px; text-align: center; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🚌 School Bus Live Tracker</h1>
+  <select id="busSelect" onchange="onBusChange()"></select>
+</header>
+
+<div class="tabs">
+  <button class="tab-btn active" id="liveTab" onclick="showTab('live')">Live Tracking</button>
+  <button class="tab-btn" id="historyTab" onclick="showTab('history')">Travel History</button>
+</div>
+
+<div class="info-bar" id="liveInfoBar">
+  <div class="info-item">
+    <span class="label">Status</span>
+    <span class="value" id="statusVal">Waiting for data...</span>
+  </div>
+  <div class="info-item">
+    <span class="label">Last Updated</span>
+    <span class="value" id="timeVal">--</span>
+  </div>
+  <div class="info-item">
+    <span class="label">Speed</span>
+    <span class="value" id="speedVal">--</span>
+  </div>
+</div>
+
+<div class="history-bar" id="historyBar">
+  <label style="font-size:14px; color:#475569;">Date:</label>
+  <input type="date" id="historyDate">
+  <button onclick="loadHistory()">Show Route</button>
+  <button class="clear-btn" onclick="clearHistory()">Back to Live</button>
+  <div class="info-item">
+    <span class="label">Total Distance</span>
+    <span class="value" id="historyKm">--</span>
+  </div>
+  <div class="info-item">
+    <span class="label">Points Recorded</span>
+    <span class="value" id="historyPoints">--</span>
+  </div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-app-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-database-compat.js"></script>
+
+<script>
+  var firebaseConfig = {
+    apiKey: "AIzaSyAVa0W9QRk2p_YugfM4GBoodxEpax2AqaA",
+    authDomain: "school-bus-tracker-63ce2.firebaseapp.com",
+    databaseURL: "https://school-bus-tracker-63ce2-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "school-bus-tracker-63ce2",
+    storageBucket: "school-bus-tracker-63ce2.firebasestorage.app",
+    messagingSenderId: "1036649845223",
+    appId: "1:1036649845223:web:1349c2566f717ecc04ad42"
+  };
+
+  var db = null;
+  try {
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.database();
+  } catch (e) {
+    document.getElementById('statusVal').innerText = "Firebase load error: " + e.message;
+  }
+
+  var map = L.map('map').setView([19.0760, 72.8777], 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  var busIcon = L.divIcon({ html: '🚌', className: 'bus-emoji-icon', iconSize: [30, 30] });
+
+  var marker = null;
+  var currentBusId = null;
+  var firstUpdate = true;
+  var historyPolyline = null;
+  var historyMarkers = [];
+  var currentTab = 'live';
+
+  // ---- Set today's date as default in the date picker ----
+  (function setDefaultDate() {
+    var d = new Date();
+    var y = d.getFullYear();
+    var m = String(d.getMonth() + 1).padStart(2, '0');
+    var day = String(d.getDate()).padStart(2, '0');
+    document.getElementById('historyDate').value = y + "-" + m + "-" + day;
+  })();
+
+  // ---- Bus list dropdown, synced from Firebase ----
+  function loadBusList() {
+    if (!db) return;
+    db.ref('busList').on('value', function (snapshot) {
+      var data = snapshot.val() || {};
+      var select = document.getElementById('busSelect');
+      var prevValue = select.value;
+      select.innerHTML = '';
+
+      var keys = Object.keys(data);
+      keys.sort().forEach(function (key) {
+        var opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = data[key];
+        select.appendChild(opt);
+      });
+
+      if (keys.length === 0) return;
+
+      var newValue = (prevValue && data[prevValue]) ? prevValue : keys[0];
+      select.value = newValue;
+
+      if (newValue !== currentBusId) {
+        switchLiveBus(newValue);
+      }
+    }, function (error) {
+      document.getElementById('statusVal').innerText = "Bus list load error (check Firebase Rules): " + error.message;
+    });
+  }
+
+  window.onBusChange = function () {
+    var newBusId = document.getElementById('busSelect').value;
+    switchLiveBus(newBusId);
+    if (currentTab === 'history') {
+      clearHistoryLayer();
+      loadHistory();
+    }
+  };
+
+  function switchLiveBus(newBusId) {
+    if (currentBusId && db) {
+      db.ref('buses/' + currentBusId).off();
+    }
+    if (marker) {
+      map.removeLayer(marker);
+      marker = null;
+    }
+    firstUpdate = true;
+    currentBusId = newBusId;
+    listenToBus(newBusId);
+  }
+
+  function listenToBus(busId) {
+    if (!db || !busId) return;
+    db.ref('buses/' + busId).on('value', function (snapshot) {
+      var data = snapshot.val();
+      if (!data) {
+        document.getElementById('statusVal').innerText = "No data yet";
+        return;
+      }
+      var lat = data.lat, lng = data.lng, speed = data.speed || 0, lastUpdated = data.lastUpdated;
+
+      if (!marker) {
+        marker = L.marker([lat, lng], { icon: busIcon }).addTo(map);
+      } else {
+        marker.setLatLng([lat, lng]);
+      }
+      if (firstUpdate) {
+        map.setView([lat, lng], 15);
+        firstUpdate = false;
+      }
+      document.getElementById('statusVal').innerText = "🟢 Live";
+      document.getElementById('timeVal').innerText = new Date(lastUpdated).toLocaleTimeString();
+      document.getElementById('speedVal').innerText = (speed * 3.6).toFixed(1) + " km/h";
+    }, function (error) {
+      document.getElementById('statusVal').innerText = "Firebase error: " + error.message;
+    });
+  }
+
+  // ---- Tabs ----
+  window.showTab = function (tab) {
+    currentTab = tab;
+    document.getElementById('liveTab').classList.toggle('active', tab === 'live');
+    document.getElementById('historyTab').classList.toggle('active', tab === 'history');
+    document.getElementById('liveInfoBar').style.display = (tab === 'live') ? 'flex' : 'none';
+    document.getElementById('historyBar').classList.toggle('show', tab === 'history');
+
+    if (tab === 'live') {
+      clearHistoryLayer();
+      if (marker) map.setView(marker.getLatLng(), 15);
+    }
+  };
+
+  // ---- History ----
+  window.loadHistory = function () {
+    if (!db || !currentBusId) return;
+    var date = document.getElementById('historyDate').value;
+    if (!date) {
+      alert("Pehle date select karo!");
+      return;
+    }
+
+    clearHistoryLayer();
+
+    db.ref('history/' + currentBusId + '/' + date).once('value').then(function (snapshot) {
+      var data = snapshot.val();
+      if (!data || !data.points) {
+        document.getElementById('historyKm').innerText = "0.00 km";
+        document.getElementById('historyPoints').innerText = "0";
+        alert("Is date ke liye koi travel history nahi mili.");
+        return;
+      }
+
+      var pointsObj = data.points;
+      var pointsArr = Object.keys(pointsObj).map(function (key) {
+        return pointsObj[key];
+      });
+      pointsArr.sort(function (a, b) {
+        return new Date(a.timestamp) - new Date(b.timestamp);
+      });
+
+      var latlngs = pointsArr.map(function (p) { return [p.lat, p.lng]; });
+
+      historyPolyline = L.polyline(latlngs, { color: '#2563eb', weight: 4 }).addTo(map);
+
+      // Start marker (green) and end marker (red)
+      if (latlngs.length > 0) {
+        var startMarker = L.circleMarker(latlngs[0], { radius: 7, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1 }).addTo(map);
+        var endMarker = L.circleMarker(latlngs[latlngs.length - 1], { radius: 7, color: '#ef4444', fillColor: '#ef4444', fillOpacity: 1 }).addTo(map);
+        historyMarkers.push(startMarker, endMarker);
+      }
+
+      map.fitBounds(historyPolyline.getBounds(), { padding: [30, 30] });
+
+      var totalKm = data.totalKm || 0;
+      document.getElementById('historyKm').innerText = totalKm.toFixed(2) + " km";
+      document.getElementById('historyPoints').innerText = pointsArr.length;
+    });
+  };
+
+  window.clearHistory = function () {
+    showTab('live');
+  };
+
+  function clearHistoryLayer() {
+    if (historyPolyline) {
+      map.removeLayer(historyPolyline);
+      historyPolyline = null;
+    }
+    historyMarkers.forEach(function (m) { map.removeLayer(m); });
+    historyMarkers = [];
+    document.getElementById('historyKm').innerText = "--";
+    document.getElementById('historyPoints').innerText = "--";
+  }
+
+  loadBusList();
+</script>
+
+</body>
+</html>
