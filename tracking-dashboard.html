@@ -301,7 +301,6 @@
 
       historyPolyline = L.polyline(latlngs, { color: '#2563eb', weight: 4 }).addTo(map);
 
-      // Start marker (green) and end marker (red)
       if (latlngs.length > 0) {
         var startMarker = L.circleMarker(latlngs[0], { radius: 7, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1 }).addTo(map);
         var endMarker = L.circleMarker(latlngs[latlngs.length - 1], { radius: 7, color: '#ef4444', fillColor: '#ef4444', fillOpacity: 1 }).addTo(map);
